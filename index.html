@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Watching Now</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; padding: 20px; }
+        .box { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; }
+
+        .stats-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 10px; text-align: center; margin-bottom: 20px; }
+        .stats-count { font-size: 28px; font-weight: bold; }
+
+        label { font-weight: bold; display: block; margin-top: 15px; color: #555; }
+        input[type="text"] { width: 100%; padding: 12px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+
+        /* TOGGLE BUTTONS */
+        .toggle-container { display: flex; gap: 10px; margin-top: 10px; background: #eee; padding: 5px; border-radius: 5px; }
+        .toggle-btn { flex: 1; padding: 10px; border: none; cursor: pointer; border-radius: 5px; font-weight: bold; background: transparent; }
+        .toggle-btn.active { background: #007bff; color: white; }
+
+        .hidden { display: none; }
+        
+        /* Progress Bar */
+        #progressContainer { width: 100%; background: #ddd; height: 8px; margin-top: 10px; border-radius: 4px; display: none; }
+        #progressBar { height: 100%; width: 0%; background: #28a745; border-radius: 4px; transition: width 0.3s; }
+
+        .btn-group { display: flex; gap: 10px; margin-top: 25px; }
+        button.action-btn { padding: 12px; border: none; cursor: pointer; border-radius: 5px; font-size: 16px; font-weight: bold; flex: 1; color: white; }
+        #submitBtn { background: #28a745; }
+        #submitBtn.update-mode { background: #ff9800; }
+        #cancelBtn { background: #6c757d; display: none; }
+
+        .video-list { margin-top: 40px; border-top: 2px solid #eee; padding-top: 20px; }
+        .video-item { background: #fff; border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
+        .video-btns button { font-size: 12px; padding: 5px 10px; margin-left: 5px; cursor: pointer; border: none; border-radius: 3px; color: white; }
+        .edit-btn { background: #ffc107; color: black !important; }
+        .del-btn { background: #dc3545; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <h2>Admin Dashboard</h2>
+        
+        <div class="stats-card">
+            <div>Total App Visits</div>
+            <div class="stats-count" id="totalVisits">Loading...</div>
+        </div>
+
+        <h3 id="formTitle">Add Video</h3>
+        
+        <label>Video Title:</label>
+        <input type="text" id="vTitle" placeholder="Enter video title...">
+
+        <label>Video Source:</label>
+        <div class="toggle-container">
+            <button class="toggle-btn active" onclick="setMode('url')">Direct URL</button>
+            <button class="toggle-btn" onclick="setMode('upload')">Upload File</button>
+        </div>
+
+        <!-- URL Input -->
+        <div id="urlSection">
+            <input type="text" id="vUrl" placeholder="Paste Video Link (https://...)">
+        </div>
+
+        <!-- File Input -->
+        <div id="fileSection" class="hidden">
+            <input type="file" id="vFile" accept="video/*">
+            <div id="progressContainer"><div id="progressBar"></div></div>
+        </div>
+
+        <div class="btn-group">
+            <button id="submitBtn" class="action-btn">Add Video</button>
+            <button id="cancelBtn" class="action-btn" onclick="cancelEdit()">Cancel</button>
+        </div>
+        <p id="status" style="text-align:center; margin-top:10px; font-weight:bold;"></p>
+
+        <div class="video-list" id="videoList">
+            <h3>Manage Videos</h3>
+            <p>Loading...</p>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
+        import { getDatabase, ref, push, onValue, remove, update } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-database.js";
+        import { getStorage, ref as sRef, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-storage.js";
+
+        // --- NEW CONFIGURATION ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBt_sHJzYm9IVs8QTE74qrUmIsuG6A2tEM",
+            authDomain: "watching-now-videos.firebaseapp.com",
+            databaseURL: "https://watching-now-videos-default-rtdb.firebaseio.com",
+            projectId: "watching-now-videos",
+            // IMPORTANT: Changed to .appspot.com to fix "unknown error"
+            storageBucket: "watching-now-videos.appspot.com", 
+            messagingSenderId: "732958436010",
+            appId: "1:732958436010:web:bd95e1276facbf44b2bed3"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const storage = getStorage(app);
+
+        let uploadMode = 'url';
+        let isEditing = false;
+        let currentEditId = null;
+        let allVideos = {};
+
+        // Stats
+        onValue(ref(db, 'app_stats/visits'), (snap) => document.getElementById('totalVisits').innerText = snap.val() || 0);
+
+        // Toggle Mode
+        window.setMode = (mode) => {
+            uploadMode = mode;
+            const btns = document.querySelectorAll('.toggle-btn');
+            const urlSec = document.getElementById('urlSection');
+            const fileSec = document.getElementById('fileSection');
+            
+            if(mode === 'url') {
+                btns[0].classList.add('active'); btns[1].classList.remove('active');
+                urlSec.classList.remove('hidden'); fileSec.classList.add('hidden');
+            } else {
+                btns[1].classList.add('active'); btns[0].classList.remove('active');
+                fileSec.classList.remove('hidden'); urlSec.classList.add('hidden');
+            }
+        }
+
+        // Submit
+        document.getElementById('submitBtn').addEventListener('click', async () => {
+            const title = document.getElementById('vTitle').value;
+            const status = document.getElementById('status');
+            const btn = document.getElementById('submitBtn');
+            const pBar = document.getElementById('progressBar');
+            const pBox = document.getElementById('progressContainer');
+
+            if(!title) { alert("Title missing!"); return; }
+
+            let videoUrl = "";
+            if(uploadMode === 'url') {
+                videoUrl = document.getElementById('vUrl').value;
+                if(!videoUrl && !isEditing) { alert("Enter URL!"); return; }
+            } else {
+                if(!document.getElementById('vFile').files[0] && !isEditing) { alert("Select File!"); return; }
+            }
+
+            btn.disabled = true;
+            status.innerText = "Processing...";
+
+            try {
+                // Upload if File Selected
+                if(uploadMode === 'upload' && document.getElementById('vFile').files[0]) {
+                    const file = document.getElementById('vFile').files[0];
+                    status.innerText = "Uploading Video... 0%";
+                    pBox.style.display = 'block';
+                    
+                    const storRef = sRef(storage, 'videos/' + Date.now() + file.name);
+                    const task = uploadBytesResumable(storRef, file);
+                    
+                    await new Promise((resolve, reject) => {
+                        task.on('state_changed', 
+                            (snap) => {
+                                const pct = (snap.bytesTransferred / snap.totalBytes) * 100;
+                                pBar.style.width = pct + "%";
+                                status.innerText = `Uploading... ${Math.round(pct)}%`;
+                            },
+                            reject,
+                            async () => {
+                                videoUrl = await getDownloadURL(task.snapshot.ref);
+                                resolve();
+                            }
+                        );
+                    });
+                }
+
+                status.innerText = "Saving...";
+                
+                if(isEditing) {
+                    let updates = { title: title };
+                    if(videoUrl) updates.videoUrl = videoUrl;
+                    await update(ref(db, 'videos/'+currentEditId), updates);
+                    status.innerText = "✅ Updated!";
+                } else {
+                    await push(ref(db, 'videos'), {
+                        title: title,
+                        videoUrl: videoUrl,
+                        likes: 0, ratingTotal: 0, ratingCount: 0
+                    });
+                    status.innerText = "✅ Added!";
+                }
+
+                status.style.color = "green";
+                cancelEdit();
+                pBox.style.display = 'none'; pBar.style.width = "0%";
+
+            } catch (err) {
+                console.error(err);
+                status.innerText = "Error: " + err.message;
+                status.style.color = "red";
+                btn.disabled = false;
+            }
+        });
+
+        // List
+        const listDiv = document.getElementById('videoList');
+        onValue(ref(db, 'videos'), (snap) => {
+            listDiv.innerHTML = "<h3>Manage Videos</h3>";
+            allVideos = snap.val() || {};
+            if(allVideos) {
+                Object.keys(allVideos).forEach(key => {
+                    const v = allVideos[key];
+                    listDiv.innerHTML += `
+                        <div class="video-item">
+                            <strong>${v.title}</strong>
+                            <div class="video-btns">
+                                <button class="edit-btn" onclick="startEdit('${key}')">Edit</button>
+                                <button class="del-btn" onclick="delVideo('${key}')">Delete</button>
+                            </div>
+                        </div>`;
+                });
+            }
+        });
+
+        window.startEdit = (id) => {
+            const v = allVideos[id];
+            document.getElementById('vTitle').value = v.title;
+            document.getElementById('vUrl').value = v.videoUrl;
+            setMode('url'); 
+            isEditing = true;
+            currentEditId = id;
+            document.getElementById('formTitle').innerText = "Edit Video";
+            const btn = document.getElementById('submitBtn');
+            btn.innerText = "Update";
+            btn.classList.add('update-mode');
+            document.getElementById('cancelBtn').style.display = "inline-block";
+            window.scrollTo(0,0);
+        }
+
+        window.cancelEdit = () => {
+            document.getElementById('vTitle').value = "";
+            document.getElementById('vUrl').value = "";
+            document.getElementById('vFile').value = "";
+            isEditing = false;
+            currentEditId = null;
+            document.getElementById('formTitle').innerText = "Add Video";
+            const btn = document.getElementById('submitBtn');
+            btn.innerText = "Add Video";
+            btn.classList.remove('update-mode');
+            btn.disabled = false;
+            document.getElementById('cancelBtn').style.display = "none";
+            document.getElementById('status').innerText = "";
+        }
+
+        window.delVideo = (id) => { if(confirm("Delete?")) remove(ref(db, 'videos/'+id)); }
+    </script>
+</body>
+</html>
